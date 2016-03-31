@@ -1,14 +1,14 @@
-Cresco-Agent-Example-Plugin
-===========================
+Cresco-Agent-Executor-Plugin
+============================
 
 ### Status
-[![Build Status](http://128.163.188.129:9998/buildStatus/icon?job=Cresco-Agent-Example-Plugin)](http://128.163.188.129:9998/job/Cresco-Agent-Example-Plugin/)
+[![Build Status](http://128.163.188.129:9998/buildStatus/icon?job=Cresco-Agent-Executor-Plugin)](http://128.163.188.129:9998/job/Cresco-Agent-Executor-Plugin/)
 
 --- 
 ### Install
 
 1. Download/update/confirm avalability of the [Cresco-Agent](http://128.163.188.129:9998/job/Cresco-Agent/lastSuccessfulBuild/com.researchworx.cresco$cresco-agent/) 
-2. Download the [Latest Build](http://128.163.188.129:9998/job/Cresco-Agent-IRNC-Plugin/lastStableBuild/com.researchworx.cresco$cresco-agent-example-plugin/) of the Cresco-Agent-Example-Plugin and place it in the _plugin_ subdirectory of the agent directory.
+2. Download the [Latest Build](http://128.163.188.129:9998/job/Cresco-Agent-Executor-Plugin/lastStableBuild/com.researchworx.cresco$cresco-agent-executor-plugin/) of the Cresco-Agent-Executor-Plugin and place it in the _plugin_ subdirectory of the agent directory.
 3. Modify _Cresco-Agent-Plugins.ini_ to configure your plug-in.
 4. Either restart the agent to load the plug-in or enable the agent through the controller.
 
