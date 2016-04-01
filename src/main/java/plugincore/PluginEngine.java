@@ -191,6 +191,20 @@ public class PluginEngine {
                         } else {
                             clog.error("Errors encountered downloading and processing file");
                         }
+                    } else {
+                        String executable = config.getPath("executable");
+                        if (executable != null) {
+                            String args = config.getPath("args");
+                            if (args != null) {
+                                clog.info("Executing: {}", folder + executable + " " + args);
+                                executeCommand(folder + executable + " " + args);
+                            } else {
+                                clog.info("Executing: {}", folder + executable);
+                                executeCommand(folder + executable);
+                            }
+                        } else {
+                            clog.error("No [executable] entry found");
+                        }
                     }
                 } else {
                     clog.error("Errors encountered generating plugin downloads folder");
