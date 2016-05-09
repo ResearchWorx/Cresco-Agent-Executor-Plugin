@@ -64,6 +64,10 @@ public class CommandExec {
 						{
 							ce.setMsgBody(PluginEngine.pluginName);
 						}
+						else if (ce.getParam("cmd").equals("get_data"))
+						{
+							ce.setMsgBody("Finished Execution");
+						}
 						/*
 						else if(ce.getParam("cmd").equals("enablelogconsumer"))
 						{

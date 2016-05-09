@@ -7,8 +7,7 @@ import java.net.URLDecoder;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.ReadableByteChannel;
-import java.nio.charset.MalformedInputException;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.jar.Attributes;
@@ -27,6 +26,8 @@ public class PluginEngine {
 
     private static CommandExec commandExec;
     private static WatchDog wd;
+    private static String exchangeID;
+    private static Runner runner;
 
     static Clogger clog;
     static ConcurrentLinkedQueue<MsgEvent> logOutQueue;
@@ -49,8 +50,9 @@ public class PluginEngine {
 
     public static void shutdown() {
         clog.info("Plugin Shutdown : Agent=" + agent + "pluginname=" + plugin);
-        wd.timer.cancel(); //prevent rediscovery
+        //wd.timer.cancel(); //prevent rediscovery
         try {
+            runner.shutdown();
             MsgEvent me = new MsgEvent(MsgEventType.CONFIG, region, null, null, "disabled");
             me.setParam("src_region", region);
             me.setParam("src_agent", agent);
@@ -107,6 +109,8 @@ public class PluginEngine {
         clog.trace("Building commandExec");
         commandExec = new CommandExec();
 
+        //clog.trace("Starting WatchDog");
+        //wd = new WatchDog();
 
         //clog.trace("Building msgOutQueue");
         //ConcurrentLinkedQueue<MsgEvent> msgOutQueue = outQueue;
@@ -134,6 +138,10 @@ public class PluginEngine {
             config = new PluginConfig(configObj);
 
             clog.info("Starting Executor Plugin");
+
+            //END RX
+            // END AMQP
+
             try {
                 boolean folderReady = false;
                 URL jarURL = PluginEngine.class.getProtectionDomain().getCodeSource().getLocation();
@@ -149,7 +157,7 @@ public class PluginEngine {
                         clog.error("Failed to create: {}", folder);
                     }
                 } else {
-                    clog.info("Already exists: {}", folder);
+                    clog.debug("Already exists: {}", folder);
                     folderReady = true;
                 }
 
@@ -161,16 +169,16 @@ public class PluginEngine {
                         String downloadFile = folder + fileName(url);
                         commandReady = downloadFile(url, downloadFile);
                         if (url.endsWith(".tar")) {
-                            executeCommand("tar xf " + downloadFile + " -C " + folder);
+                            executeCommand(folder, "tar xf " + downloadFile + " -C " + folder);
                         } else if (url.endsWith(".tar.gz")) {
-                            executeCommand("tar xzf " + downloadFile + " -C " + folder);
+                            executeCommand(folder, "tar xzf " + downloadFile + " -C " + folder);
                         } else if (url.endsWith(".zip")) {
-                            executeCommand("unzip -uq " + downloadFile + " -d " + folder);
+                            executeCommand(folder, "unzip -uq " + downloadFile + " -d " + folder);
                         }
                         String executable = config.getPath("executable");
                         if (executable != null) {
                             if ((new File(folder + executable)).exists()) {
-                                executeCommand("chmod a+x " + folder + executable);
+                                executeCommand(folder, "chmod a+x " + folder + executable);
                             } else {
                                 commandReady = false;
                                 clog.error("Executable file does not exist");
@@ -183,10 +191,10 @@ public class PluginEngine {
                             String args = config.getPath("args");
                             if (args != null) {
                                 clog.info("Executing: {}", folder + executable + " " + args);
-                                executeCommand(folder + executable + " " + args);
+                                executeCommand(folder, executable + " " + args);
                             } else {
                                 clog.info("Executing: {}", folder + executable);
-                                executeCommand(folder + executable);
+                                executeCommand(folder, executable);
                             }
                         } else {
                             clog.error("Errors encountered downloading and processing file");
@@ -197,13 +205,15 @@ public class PluginEngine {
                             String args = config.getPath("args");
                             if (args != null) {
                                 clog.info("Executing: {}", folder + executable + " " + args);
-                                executeCommand(folder + executable + " " + args);
+                                executeCommand(folder, executable + " " + args);
                             } else {
                                 clog.info("Executing: {}", folder + executable);
-                                executeCommand(folder + executable);
+                                executeCommand(folder, executable);
                             }
                         } else {
-                            clog.error("No [executable] entry found");
+                            String runCommand = config.getPath("runCommand");
+                            exchangeID = runCommand.substring(runCommand.lastIndexOf(" ") + 1);
+                            executeCommand(folder, runCommand);
                         }
                     }
                 } else {
@@ -218,15 +228,12 @@ public class PluginEngine {
                 return false;
             }
 
-            clog.trace("Starting WatchDog");
-            wd = new WatchDog();
             clog.trace("Successfully started plugin");
             return true;
         } catch (Exception ex) {
             String msg = "ERROR IN PLUGIN: : Region=" + region + " Agent=" + agent + " plugin=" + plugin + " " + ex.getMessage();
             ex.printStackTrace();
             clog.error("initialize {}", msg);
-            //clog.error(msg);
             return false;
         }
     }
@@ -253,33 +260,119 @@ public class PluginEngine {
         return url.substring(url.lastIndexOf("/") + 1);
     }
 
-    private void executeCommand(String command) {
-        StringBuffer output = new StringBuffer();
-        StringBuffer error = new StringBuffer();
-        Process p;
-        try {
-            p = Runtime.getRuntime().exec(command);
-            p.waitFor();
-            BufferedReader outputFeed = new BufferedReader(new InputStreamReader(p.getInputStream()));
-            String outputLine;
-            while ((outputLine = outputFeed.readLine()) != null) {
-                output.append(outputLine);
+    private void executeCommand(String folder, String command) {
+        runner = new Runner(command);
+        new Thread(runner).start();
+    }
+
+    private static class Runner implements Runnable {
+        private static Set<String> executables = new HashSet<>(Arrays.asList("netflow", "packet_trace", "packet_validation", "sendudp"));
+        private String command;
+        private boolean complete = false;
+
+        Runner(String command) {
+            this.command = command;
+        }
+
+        @Override
+        public void run() {
+            try {
+                boolean canRun = false;
+                for (String executable : executables)
+                    if (command.startsWith(executable))
+                            canRun = true;
+                if (!canRun) return;
+                ProcessBuilder pb = new ProcessBuilder("sudo","bash","-c", command);
+                final Process p = pb.start();
+
+                StreamGobbler errorGobbler = new StreamGobbler(p.getErrorStream());
+                StreamGobbler outputGobbler = new StreamGobbler(p.getInputStream());
+
+                errorGobbler.start();
+                outputGobbler.start();
+
+                int exitValue = p.waitFor();
+
+                Map<String, String> params = new HashMap<>();
+                params.put("src_region", PluginEngine.region);
+                params.put("src_agent", PluginEngine.agent);
+                params.put("src_plugin", PluginEngine.plugin);
+                params.put("dst_region", PluginEngine.region);
+                params.put("dst_agent", PluginEngine.agent);
+                params.put("dst_plugin", "plugin/1");
+                params.put("cmd", "execution_log");
+                params.put("exchange", exchangeID);
+                params.put("log", "[" + new Date() + "] " + Integer.toString(exitValue));
+                MsgEvent output = new MsgEvent(MsgEventType.EXEC, PluginEngine.region, PluginEngine.agent, PluginEngine.plugin, params);
+                PluginEngine.msgInQueue.offer(output);
+
+                complete = true;
+                MsgEvent finished;
+                params = new HashMap<>();
+                params.put("src_region", PluginEngine.region);
+                params.put("src_agent", PluginEngine.agent);
+                params.put("src_plugin", PluginEngine.plugin);
+                params.put("dst_region", PluginEngine.region);
+                params.put("dst_agent", PluginEngine.agent);
+                params.put("dst_plugin", "plugin/1");
+                params.put("cmd", "delete_exchange");
+                params.put("exchange", exchangeID);
+
+                finished = new MsgEvent(MsgEventType.EXEC, PluginEngine.region, PluginEngine.agent, PluginEngine.plugin, params);
+
+                PluginEngine.msgInQueue.offer(finished);
+            } catch (Exception e) {
+                e.printStackTrace();
             }
-            if (!output.toString().equals(""))
-                clog.info(output.toString());
-            BufferedReader errorFeed = new BufferedReader(new InputStreamReader(p.getErrorStream()));
-            String errorLine;
-            while ((errorLine = errorFeed.readLine()) != null) {
-                error.append(errorLine);
+        }
+
+        private static class StreamGobbler extends Thread {
+            InputStream is;
+
+            StreamGobbler(InputStream is) {
+                this.is = is;
             }
-            if (!error.toString().equals(""))
-                clog.error(error.toString());
-        } catch (IOException ioe) {
-            // WHAT!?! DO SOMETHIN'!
-        } catch (InterruptedException ie) {
-            // WHAT!?! DO SOMETHIN'!
-        } catch (Exception e) {
-            // WHAT!?! DO SOMETHIN'!
+
+            @Override
+            public void run() {
+                try {
+                    InputStreamReader isr = new InputStreamReader(is);
+                    BufferedReader br = new BufferedReader(isr);
+                    String line;
+                    while ( ( line = br.readLine() ) != null ) {
+                        System.out.println("Output: " + line);
+                        MsgEvent output;
+                        Map<String, String> params = new HashMap<>();
+                        params.put("src_region", PluginEngine.region);
+                        params.put("src_agent", PluginEngine.agent);
+                        params.put("src_plugin", PluginEngine.plugin);
+                        params.put("dst_region", PluginEngine.region);
+                        params.put("dst_agent", PluginEngine.agent);
+                        params.put("dst_plugin", "plugin/1");
+                        params.put("cmd", "execution_log");
+                        params.put("exchange", exchangeID);
+                        params.put("log", "[" + new Date() + "] " + line);
+
+                        output = new MsgEvent(MsgEventType.EXEC, PluginEngine.region, PluginEngine.agent, PluginEngine.plugin, params);
+                        PluginEngine.msgInQueue.offer(output);
+                    }
+                    br.close();
+                } catch (IOException e) {
+                    clog.error("StreamGobbler : {}", e.getMessage());
+                }
+            }
+        }
+
+        void shutdown() {
+            if (!complete) {
+                clog.info("Killing process");
+                try {
+                    ProcessBuilder pb = new ProcessBuilder("sudo", "bash", "-c", "kill -2 $(ps aux | grep '[" + exchangeID.charAt(0) + "]" + exchangeID.substring(1) + "' | awk '{print $2}')");
+                    pb.start();
+                } catch (IOException e) {
+                    clog.error("IOException in shutdown() : " + e.getMessage());
+                }
+            }
         }
     }
 
